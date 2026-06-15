@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 # Konfigurasi Halaman Streamlit
 st.set_page_config(page_title="Analisis Jaringan Saham IDX", layout="wide")
-st.title("🕸️ Analisis Jaringan Korelasi Saham Indonesia (IDX) - Versi 2")
+st.title("🕸️ Analisis Jaringan Korelasi Saham Indonesia (IDX)")
 st.markdown("""
 Dashboard ini memvisualisasikan saham-saham yang bergerak searah. 
 Garis yang menghubungkan dua saham menunjukkan korelasi positif yang kuat di antara keduanya.
@@ -18,96 +18,94 @@ st.sidebar.header("Pengaturan Analisis")
 
 # Daftar Saham Default (Bluechips & Tech)
 default_tickers = "BBCA.JK, BBRI.JK, BMRI.JK, BBNI.JK, TLKM.JK, ASII.JK, GOTO.JK, AMMN.JK, BREN.JK, UNVR.JK, ICBP.JK, PGAS.JK, ADRO.JK, PTBA.JK"
-tickers_input = st.sidebar.text_area("Masukkan Kod Saham (Gunakan .JK untuk saham Indonesia):", default_tickers)
-# Membersihkan senarai ticker
+tickers_input = st.sidebar.text_area("Masukkan Kode Saham (Gunakan .JK untuk saham Indonesia):", default_tickers)
+# Membersihkan list ticker
 tickers_list = [ticker.strip() for ticker in tickers_input.split(',') if ticker.strip()]
 
 # Pengaturan Waktu
 end_date = datetime.today()
 start_date = end_date - timedelta(days=365) # Default 1 tahun terakhir
-start = st.sidebar.date_input("Tarikh Mula", start_date)
-end = st.sidebar.date_input("Tarikh Akhir", end_date)
+start = st.sidebar.date_input("Tanggal Mulai", start_date)
+end = st.sidebar.date_input("Tanggal Akhir", end_date)
 
 # Batas Korelasi
 corr_threshold = st.sidebar.slider("Batas Korelasi Minimum", min_value=0.0, max_value=1.0, value=0.6, step=0.05, 
-                                   help="Semakin tinggi nilainya, semakin ketat hubungannya. 0.6 bermakna korelasi positif yang agak kuat.")
+                                   help="Semakin tinggi nilainya, semakin ketat hubungannya. 0.6 berarti korelasi positif yang cukup kuat.")
 
-# --- MENGAMBIL DATA (DIPERBAIKI) ---
+# --- MENGAMBIL DATA ---
 @st.cache_data
 def load_data(tickers, start, end):
     try:
         if not tickers:
-            return "Sila masukkan sekurang-kurangnya satu kod saham."
+            return "Silakan masukkan setidaknya satu kode saham."
 
-        # Memuat turun data
+        # Mengunduh data
         df = yf.download(tickers, start=start, end=end, progress=False)
         
-        # Semak jika data kosong
+        # Cek jika data kosong
         if df.empty:
-            return "Data tidak ditemui untuk julat tarikh ini."
+            return "Data tidak ditemukan untuk rentang tanggal ini."
 
-        # Tangani struktur multi-index yfinance dan cari 'Adj Close' atau 'Close'
+        # Menangani struktur multi-index yfinance dan mencari 'Adj Close' atau 'Close'
         if 'Adj Close' in df.columns:
             data = df['Adj Close']
         elif 'Close' in df.columns:
             data = df['Close']
         else:
-             return "Lajur 'Adj Close' atau 'Close' tidak wujud dalam data yang dimuat turun."
+             return "Kolom harga penutupan tidak ditemukan dalam data."
 
-        # Jika hanya 1 saham, yfinance mengembalikan Series, kita perlu tukar ke DataFrame
+        # Jika hanya 1 saham, yfinance mengembalikan Series, kita perlu ubah ke DataFrame
         if isinstance(data, pd.Series):
             data = data.to_frame(name=tickers[0])
 
-        # Buang lajur (saham) yang tidak mempunyai sebarang data (Semua NaN)
+        # Buang kolom (saham) yang tidak memiliki data sama sekali (All NaN)
         data = data.dropna(axis=1, how='all')
         
         if data.empty or data.shape[1] < 2:
-            return "Data tidak mencukupi untuk mengira korelasi. Pastikan sekurang-kurangnya 2 saham mempunyai data yang sah."
+            return "Data tidak cukup untuk menghitung korelasi. Pastikan minimal 2 saham valid."
 
-        # Mengira peratusan perubahan harian (return)
+        # Menghitung persentase perubahan harian (return)
         returns = data.pct_change().dropna(how='all')
         
-        # Mengira matriks korelasi
+        # Menghitung matriks korelasi
         corr_matrix = returns.corr()
         return corr_matrix
 
     except Exception as e:
-        return f"Ralat sistem: {str(e)}"
+        return f"Terjadi kesalahan sistem: {str(e)}"
 
-with st.spinner("Memuat turun data dan mengira korelasi..."):
+with st.spinner("Mengunduh data dan menghitung korelasi..."):
     corr_matrix = load_data(tickers_list, start, end)
 
-# --- PAPARAN HASIL / RALAT ---
+# --- MENAMPILKAN HASIL ---
 if isinstance(corr_matrix, str):
-    # Jika ia memulangkan rentetan (string), bermaksud ada ralat
-    st.error(f"Terjadi kesalahan saat mengambil data: {corr_matrix}")
+    st.error(corr_matrix)
 else:
     # --- MEMBUAT JARINGAN (NETWORK) ---
     G = nx.Graph()
     
-    # Dapatkan senarai saham yang berjaya dimuat turun (berdasarkan lajur matriks)
     valid_tickers = corr_matrix.columns.tolist()
 
-    # Menambah Node (Saham)
+    # Menambahkan Node (Saham)
     for ticker in valid_tickers:
         G.add_node(ticker)
 
-    # Menambah Edge (Garis Koneksi) berdasarkan Threshold Korelasi
+    # Menambahkan Edge (Garis Koneksi) berdasarkan Threshold
     for i in range(len(valid_tickers)):
         for j in range(i+1, len(valid_tickers)):
             stock1 = valid_tickers[i]
             stock2 = valid_tickers[j]
             korelasi = corr_matrix.iloc[i, j]
             
-            # Semak jika nilai korelasi sah (bukan NaN) dan melepasi batas
+            # Memastikan korelasi valid dan memenuhi batas
             if pd.notna(korelasi) and korelasi >= corr_threshold:
                 G.add_edge(stock1, stock2, weight=korelasi)
 
     # --- VISUALISASI DENGAN PLOTLY ---
     if G.number_of_nodes() == 0:
-        st.warning("Tiada data yang mencukupi untuk dipaparkan.")
+        st.warning("Tidak ada saham yang memenuhi batas korelasi tersebut.")
     else:
-        # Mengatur susun atur node (spring layout)
+        # Layout Spring agar node yang terkoneksi berdekatan
         pos = nx.spring_layout(G, seed=42)
 
         edge_x = []
@@ -134,11 +132,11 @@ else:
             node_x.append(x)
             node_y.append(y)
             
-            # Kira jumlah sambungan
             connections = len(list(G.neighbors(node)))
             node_color.append(connections)
             node_text.append(f"<b>{node.replace('.JK', '')}</b><br>Koneksi: {connections}")
 
+        # PERBAIKAN PADA BAGIAN INI: line=dict(width=2, color='DarkSlateGrey')
         node_trace = go.Scatter(
             x=node_x, y=node_y,
             mode='markers+text',
@@ -158,7 +156,9 @@ else:
                     xanchor='left',
                     titleside='right'
                 ),
-                line_width=2))
+                line=dict(width=2, color='DarkSlateGrey') 
+            )
+        )
 
         fig = go.Figure(data=[edge_trace, node_trace],
                      layout=go.Layout(
@@ -177,6 +177,6 @@ else:
         
         st.markdown("""
         **Cara Membaca:**
-        * **Titik (Node):** Mewakili satu saham. Semakin gelap/berbeza warnanya, semakin banyak saham lain yang berkorelasi dengannya.
-        * **Garis (Edge):** Jika dua saham dihubungkan oleh garis, ertinya pergerakan harian mereka memiliki korelasi positif di atas ambang batas. Apabila satu naik, probabiliti yang satu lagi ikut naik adalah sangat tinggi.
+        * **Titik (Node):** Mewakili satu saham. Semakin gelap/berbeda warnanya, semakin banyak saham lain yang berkorelasi dengannya.
+        * **Garis (Edge):** Jika dua saham dihubungkan oleh garis, artinya pergerakan harian mereka memiliki korelasi positif di atas batas minimum.
         """)
