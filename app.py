@@ -5,7 +5,7 @@ import networkx as nx
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
-# Konfigurasi Halaman Streamlit
+# --- KONFIGURASI HALAMAN ---
 st.set_page_config(page_title="Analisis Jaringan Saham IDX", layout="wide")
 st.title("🕸️ Analisis Jaringan Korelasi Saham Indonesia (IDX)")
 st.markdown("""
@@ -32,38 +32,49 @@ end = st.sidebar.date_input("Tanggal Akhir", end_date)
 corr_threshold = st.sidebar.slider("Batas Korelasi Minimum", min_value=0.0, max_value=1.0, value=0.6, step=0.05, 
                                    help="Semakin tinggi nilainya, semakin ketat hubungannya. 0.6 berarti korelasi positif yang cukup kuat.")
 
-# --- MENGAMBIL DATA ---
+# --- MENGAMBIL DATA (STRATEGI ITERATIF) ---
 @st.cache_data
 def load_data(tickers, start, end):
     try:
         if not tickers:
             return "Silakan masukkan setidaknya satu kode saham."
 
-        # Mengunduh data
-        df = yf.download(tickers, start=start, end=end, progress=False)
+        data = pd.DataFrame()
+        valid_tickers_found = 0
+
+        # Mengunduh data satu per satu agar jauh lebih stabil
+        for ticker in tickers:
+            try:
+                # Unduh per saham
+                df = yf.download(ticker, start=start, end=end, progress=False)
+                
+                # Pastikan data tidak kosong
+                if not df.empty:
+                    # Ambil harga Close atau Adj Close (mengatasi inkonsistensi yfinance)
+                    if 'Adj Close' in df.columns:
+                        price_series = df['Adj Close']
+                    elif 'Close' in df.columns:
+                        price_series = df['Close']
+                    else:
+                        continue # Lewati jika tidak ada kolom harga
+
+                    # Hapus nilai NaN awal/akhir untuk memastikan ada isinya
+                    price_series = price_series.dropna()
+                    
+                    if not price_series.empty:
+                        # Masukkan ke DataFrame utama
+                        data[ticker] = price_series
+                        valid_tickers_found += 1
+            except Exception:
+                pass # Abaikan saham yang gagal diunduh dan lanjut ke saham berikutnya
         
-        # Cek jika data kosong
-        if df.empty:
-            return "Data tidak ditemukan untuk rentang tanggal ini."
+        # Validasi apakah saham yang sukses diunduh cukup
+        if valid_tickers_found < 2:
+            return f"Hanya berhasil mengunduh {valid_tickers_found} saham yang valid. Pastikan rentang tanggal tidak di hari libur, dan minimal 2 kode saham aktif pada periode tersebut."
 
-        # Menangani struktur multi-index yfinance dan mencari 'Adj Close' atau 'Close'
-        if 'Adj Close' in df.columns:
-            data = df['Adj Close']
-        elif 'Close' in df.columns:
-            data = df['Close']
-        else:
-             return "Kolom harga penutupan tidak ditemukan dalam data."
-
-        # Jika hanya 1 saham, yfinance mengembalikan Series, kita perlu ubah ke DataFrame
-        if isinstance(data, pd.Series):
-            data = data.to_frame(name=tickers[0])
-
-        # Buang kolom (saham) yang tidak memiliki data sama sekali (All NaN)
-        data = data.dropna(axis=1, how='all')
+        # Isi data kosong (misal karena beda hari libur) dengan nilai sebelumnya/sesudahnya
+        data = data.ffill().bfill()
         
-        if data.empty or data.shape[1] < 2:
-            return "Data tidak cukup untuk menghitung korelasi. Pastikan minimal 2 saham valid."
-
         # Menghitung persentase perubahan harian (return)
         returns = data.pct_change().dropna(how='all')
         
@@ -74,7 +85,7 @@ def load_data(tickers, start, end):
     except Exception as e:
         return f"Terjadi kesalahan sistem: {str(e)}"
 
-with st.spinner("Mengunduh data dan menghitung korelasi..."):
+with st.spinner("Mengunduh data dan menghitung korelasi... (Mungkin memakan waktu beberapa detik)"):
     corr_matrix = load_data(tickers_list, start, end)
 
 # --- MENAMPILKAN HASIL ---
@@ -103,7 +114,9 @@ else:
 
     # --- VISUALISASI DENGAN PLOTLY ---
     if G.number_of_nodes() == 0:
-        st.warning("Tidak ada saham yang memenuhi batas korelasi tersebut.")
+        st.warning("Tidak ada data yang diproses.")
+    elif G.number_of_edges() == 0:
+        st.info("Tidak ada saham yang memiliki korelasi di atas batas minimum yang ditentukan. Coba turunkan 'Batas Korelasi Minimum' di sebelah kiri.")
     else:
         # Layout Spring agar node yang terkoneksi berdekatan
         pos = nx.spring_layout(G, seed=42)
@@ -136,7 +149,6 @@ else:
             node_color.append(connections)
             node_text.append(f"<b>{node.replace('.JK', '')}</b><br>Koneksi: {connections}")
 
-        # PERBAIKAN PADA BAGIAN INI: line=dict(width=2, color='DarkSlateGrey')
         node_trace = go.Scatter(
             x=node_x, y=node_y,
             mode='markers+text',
@@ -176,6 +188,7 @@ else:
         st.plotly_chart(fig, use_container_width=True)
         
         st.markdown("""
+        ---
         **Cara Membaca:**
         * **Titik (Node):** Mewakili satu saham. Semakin gelap/berbeda warnanya, semakin banyak saham lain yang berkorelasi dengannya.
         * **Garis (Edge):** Jika dua saham dihubungkan oleh garis, artinya pergerakan harian mereka memiliki korelasi positif di atas batas minimum.
